@@ -5,11 +5,6 @@
 #   2) Render → New → Blueprint → selecione o repositório
 #   3) O Render cria o Web Service automaticamente
 #   4) Defina NVIDIA_API_KEY no dashboard (Environment → Add Environment Variable)
-#
-# Observações:
-#   • plan: free → instância 512 MB RAM (hiberna após 15 min de inatividade)
-#   • sync: false → o Render NÃO tenta versionar esse valor; você digita no painel
-#   • autoDeploy: true → todo push na branch principal re-deploya
 
 services:
   - type: web
@@ -23,12 +18,18 @@ services:
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
 
+    # ✅ Endpoint de health do Streamlit (criado automaticamente pela lib).
+    #    O Render consulta este path para saber se o serviço está saudável.
+    #    Se não responder 200 em ~30s, o Render considera o deploy falho
+    #    e (em runtime) reinicia a instância.
+    healthCheckPath: /_stcore/health
+
     envVars:
       # Chave NVIDIA — preenchida manualmente no dashboard após o primeiro deploy
       - key: NVIDIA_API_KEY
         sync: false
 
-      # Fixa a versão do Python (Render usa 3.11.x por padrão; tornamos explícito)
+      # Versão explícita do Python (Render usa 3.11.x por padrão)
       - key: PYTHON_VERSION
         value: "3.11.9"
 
