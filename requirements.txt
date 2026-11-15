@@ -1,0 +1,21 @@
+# Tarder IA — dependências
+# Fixadas em faixas estáveis; todas com wheels pré-compiladas para Linux x86_64.
+# Compatível com Python 3.10, 3.11 e 3.12.
+
+# ── UI / App ────────────────────────────────────────────────────────────────
+streamlit>=1.32,<2.0
+
+# ── SDK oficial compatível com NVIDIA NIM (OpenAI-compatible) ───────────────
+openai>=1.40,<2.0
+
+# ── Carregamento de variáveis de ambiente (.env local) ──────────────────────
+python-dotenv>=1.0,<2.0
+
+# ── Extração de texto de PDFs (sem OCR) ─────────────────────────────────────
+pypdf>=4.2,<6.0
+
+# ── Contagem de tokens (com fallback em utils.py se indisponível) ───────────
+tiktoken>=0.7,<1.0
+
+# ── Validação de imagens enviadas (evita payloads maliciosos) ───────────────
+pillow>=10.3,<12.0
