@@ -37,9 +37,6 @@ from config import (
     EXTENSOES_PDF,
     EXTENSOES_TEXTO,
     MAX_FILE_SIZE_BYTES,
-    MIME_IMAGEM,
-    MIME_PDF,
-    MIME_TEXTO,
     MODELOS,
 )
 from utils import (
@@ -297,23 +294,36 @@ def _render_seletor_modelo() -> None:
 
 
 def _render_uploader() -> None:
-    """Uploader dinâmico conforme os formatos do modelo ativo."""
+    """Uploader dinâmico conforme os formatos do modelo ativo.
+
+    IMPORTANTE — leia antes de "consertar":
+
+    Passamos APENAS extensões (sem ponto) ao `type=` do file_uploader.
+    NÃO adicione MIME types aqui. Misturar MIME types (ex.: "text/plain")
+    com extensões (ex.: "png") faz com que alguns browsers — notavelmente
+    Chrome/Edge no Windows — abram o diálogo nativo já filtrado pelo
+    primeiro MIME, escondendo imagens e PDFs por trás do dropdown.
+
+    Só com extensões, o diálogo abre em "Todos os arquivos suportados" e
+    mostra tudo lado a lado. Se o comportamento voltar a quebrar, revise
+    esta função primeiro.
+    """
     meta = _modelo_atual()
     formatos = meta["formatos"]
 
     exts: List[str] = []
-    mimes: List[str] = []
     if "texto" in formatos:
         exts += EXTENSOES_TEXTO
-        mimes += MIME_TEXTO
     if "imagem" in formatos:
         exts += EXTENSOES_IMAGEM
-        mimes += MIME_IMAGEM
-    # PDF sempre disponível (extraído como texto)
+    # PDF sempre disponível (extraído como texto pelo pypdf)
     exts += EXTENSOES_PDF
-    mimes += MIME_PDF
 
-    accept = [e.lstrip(".") for e in exts] + mimes
+    # Só extensões sem ponto — máxima compatibilidade entre SOs/browsers.
+    accept = [e.lstrip(".") for e in exts]
+
+    # Lista os formatos aceitos de forma legível no help do widget.
+    formatos_legiveis = ", ".join(sorted({e.lstrip(".").upper() for e in exts}))
 
     st.markdown("##### 📎 Anexos")
     arquivos = st.file_uploader(
@@ -323,8 +333,8 @@ def _render_uploader() -> None:
         key=f"uploader_{st.session_state.upload_nonce}",
         label_visibility="collapsed",
         help=(
-            f"Tamanho máx.: {tamanho_legivel(MAX_FILE_SIZE_BYTES)} por arquivo. "
-            "Imagens só são aceitas por modelos multimodais."
+            f"Tamanho máx.: {tamanho_legivel(MAX_FILE_SIZE_BYTES)} por arquivo.\n\n"
+            f"Formatos aceitos neste modelo: {formatos_legiveis}."
         ),
     )
 
