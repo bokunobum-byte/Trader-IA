@@ -1,9 +1,9 @@
 # Tarder IA — dependências
-# Fixadas em faixas estáveis; todas com wheels pré-compiladas para Linux x86_64.
 # Compatível com Python 3.10, 3.11 e 3.12.
 
 # ── UI / App ────────────────────────────────────────────────────────────────
-streamlit>=1.32,<2.0
+# >=1.40 é OBRIGATÓRIO: chat_input(accept_file=True) foi adicionado nessa versão
+streamlit>=1.40,<2.0
 
 # ── SDK oficial compatível com NVIDIA NIM (OpenAI-compatible) ───────────────
 openai>=1.40,<2.0
