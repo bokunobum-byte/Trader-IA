@@ -2,8 +2,8 @@
 # Compatível com Python 3.10, 3.11 e 3.12.
 
 # ── UI / App ────────────────────────────────────────────────────────────────
-# >=1.40 é OBRIGATÓRIO: chat_input(accept_file=True) foi adicionado nessa versão
-streamlit>=1.40,<2.0
+# >=1.42 é OBRIGATÓRIO: accept_file="multiple" em chat_input foi adicionado nessa versão
+streamlit>=1.42,<2.0
 
 # ── SDK oficial compatível com NVIDIA NIM (OpenAI-compatible) ───────────────
 openai>=1.40,<2.0
