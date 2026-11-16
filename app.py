@@ -438,12 +438,15 @@ def _render_main() -> None:
             f"· máx. **{tamanho_legivel(MAX_FILE_SIZE_BYTES)}** por arquivo"
         )
 
-    # Input do chat COM upload integrado (📎 dentro da caixa)
+    # Input do chat COM upload integrado (📎 dentro da caixa).
+    #
+    # IMPORTANTE: no st.chat_input o parâmetro correto é accept_file="multiple".
+    # NÃO use accept_multiple_files=True — esse parâmetro só existe no
+    # st.file_uploader e gera TypeError no chat_input.
     resultado = st.chat_input(
         "Digite sua mensagem ou anexe um arquivo...",
-        accept_file=True,
+        accept_file="multiple",
         file_type=[e.lstrip(".") for e in _EXTENSOES_ACEITAS],
-        accept_multiple_files=True,
     )
     if resultado:
         _processar_envio(resultado)
