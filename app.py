@@ -4,8 +4,9 @@ app.py — Interface Streamlit principal do Tarder IA.
 Responsabilidades:
   • Carregar variáveis de ambiente (.env local)
   • Aplicar CSS escuro moderno (verde NVIDIA + azul)
-  • Renderizar sidebar (logo, seletor de modelo, uploads, tokens, limpar)
-  • Renderizar chat com histórico e streaming
+  • Renderizar sidebar (logo, seletor de modelo, tokens, limpar)
+  • Renderizar chat com histórico, streaming e upload DENTRO do input
+  • Enviar arquivos junto com a mensagem para o modelo ativo
   • Avisar sobre incompatibilidade imagem/modelo e estouro de tokens
   • Nunca expor a API key (delegado a api_client)
 
@@ -57,6 +58,13 @@ st.set_page_config(
     page_title=APP_TITULO,
     page_icon=APP_ICONE,
     initial_sidebar_state="expanded",
+)
+
+# Lista unificada de extensões aceitas pelo chat_input.
+# Aceita TODOS os tipos suportados pelo app; a validação por modelo é feita
+# no envio (o modelo ativo pode rejeitar imagens, por exemplo).
+_EXTENSOES_ACEITAS: List[str] = (
+    EXTENSOES_TEXTO + EXTENSOES_IMAGEM + EXTENSOES_PDF
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -112,18 +120,26 @@ def _injetar_css() -> None:
             color: {COR_TEXTO};
             border: 1px solid #334155;
         }}
-        /* Input do chat */
-        [data-testid="stChatInput"] textarea {{
+        /* Input do chat + botão de anexo */
+        [data-testid="stChatInput"] {{
             background-color: #1e293b !important;
-            color: {COR_TEXTO} !important;
+            border-radius: 14px !important;
             border: 1px solid #334155 !important;
-            border-radius: 12px !important;
         }}
-        /* Área de upload */
-        [data-testid="stFileUploader"] section {{
-            background-color: #0b1220;
-            border: 1px dashed #334155;
-            border-radius: 10px;
+        [data-testid="stChatInput"] textarea {{
+            background-color: transparent !important;
+            color: {COR_TEXTO} !important;
+        }}
+        /* Chips de anexos nas mensagens */
+        .anexo-chip {{
+            display: inline-block;
+            background-color: #33415580;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            padding: 4px 10px;
+            margin: 3px 3px 0 0;
+            font-size: 0.8em;
+            color: {COR_TEXTO};
         }}
         /* Títulos e código */
         h1, h2, h3 {{ color: {COR_VERDE_NVIDIA}; }}
@@ -133,20 +149,12 @@ def _injetar_css() -> None:
             padding: 2px 6px;
             border-radius: 4px;
         }}
-        pre code {{
-            background-color: #0b1220 !important;
-        }}
+        pre code {{ background-color: #0b1220 !important; }}
         a {{ color: {COR_AZUL_ACENTO}; }}
         /* Métrica (token counter) */
-        [data-testid="stMetricValue"] {{
-            color: {COR_VERDE_NVIDIA} !important;
-        }}
-        [data-testid="stMetricLabel"] {{
-            color: #94a3b8 !important;
-        }}
-        /* Divider */
+        [data-testid="stMetricValue"] {{ color: {COR_VERDE_NVIDIA} !important; }}
+        [data-testid="stMetricLabel"] {{ color: #94a3b8 !important; }}
         hr {{ border-color: #1e293b; }}
-        /* Selectbox */
         [data-testid="stSelectbox"] > div > div {{
             background-color: #1e293b;
             border-color: #334155;
@@ -164,19 +172,11 @@ def _injetar_css() -> None:
 def _init_state() -> None:
     """Inicializa chaves de sessão de forma idempotente."""
     if "mensagens" not in st.session_state:
-        # Cada item: {"role", "content", "display_text"?, "anexos_nomes"?, "modelo_id"?}
+        # Cada item: {"role", "content", "display_text"?, "anexos_info"?, "modelo_id"?}
         st.session_state.mensagens = []
-
-    if "anexos" not in st.session_state:
-        # Cada item: dict vindo de utils.processar_upload
-        st.session_state.anexos = []
 
     if "modelo_id" not in st.session_state:
         st.session_state.modelo_id = list(MODELOS.keys())[0]
-
-    if "upload_nonce" not in st.session_state:
-        # Serve para resetar o st.file_uploader ao trocar de modelo / remover anexo
-        st.session_state.upload_nonce = 0
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -197,25 +197,19 @@ def _mensagens_para_api() -> List[Dict[str, Any]]:
 
 
 def _estimar_tokens_totais() -> int:
-    """Tokens do histórico + anexos pendentes."""
-    total = estimar_tokens_mensagens(_mensagens_para_api())
-    for anexo in st.session_state.anexos:
-        if anexo["tipo"] in ("texto", "pdf"):
-            total += contar_tokens(anexo.get("conteudo", ""))
-        elif anexo["tipo"] == "imagem":
-            total += 850  # estimativa fixa por imagem
-    return total
+    """Tokens do histórico (inclui imagens e textos dos anexos já enviados)."""
+    return estimar_tokens_mensagens(_mensagens_para_api())
 
 
-def _tem_imagem_anexada() -> bool:
-    return any(a["tipo"] == "imagem" for a in st.session_state.anexos)
-
-
-def _incompatibilidade_imagem() -> bool:
-    """True se anexo de imagem existe mas o modelo ativo não aceita imagem."""
-    if "imagem" in _modelo_atual()["formatos"]:
-        return False
-    return _tem_imagem_anexada()
+def _historico_tem_imagem() -> bool:
+    """True se alguma mensagem anterior já contém imagem multimodal."""
+    for msg in st.session_state.mensagens:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for parte in content:
+                if isinstance(parte, dict) and parte.get("type") == "image_url":
+                    return True
+    return False
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -243,17 +237,13 @@ def _render_sidebar() -> None:
         _render_seletor_modelo()
         st.divider()
 
-        # Aviso antecipado de incompatibilidade
-        if _incompatibilidade_imagem():
+        # Aviso: histórico tem imagem, modelo atual não aceita
+        if _historico_tem_imagem() and "imagem" not in _modelo_atual()["formatos"]:
             st.warning(
-                "Este modelo não aceita imagens. "
-                "Remova o anexo ou troque de modelo."
+                "O histórico contém imagens, mas o modelo atual não as aceita. "
+                "Limpe a conversa ou troque para um modelo multimodal."
             )
 
-        _render_uploader()
-        _render_anexos_chips()
-
-        st.divider()
         _render_token_counter()
         st.divider()
         _render_acoes()
@@ -279,11 +269,8 @@ def _render_seletor_modelo() -> None:
 
     escolhido = st.selectbox("Modelo", opcoes, index=idx_atual)
     novo_id = nome_para_id[escolhido]
-
     if novo_id != st.session_state.modelo_id:
         st.session_state.modelo_id = novo_id
-        # Reseta o uploader para não confundir formatos
-        st.session_state.upload_nonce += 1
 
     meta = _modelo_atual()
     st.caption(meta["descricao"])
@@ -291,110 +278,6 @@ def _render_seletor_modelo() -> None:
         f"Contexto: **{meta['max_tokens_contexto']:,}** tokens · "
         f"Saída máx.: **{meta['max_tokens_saida']:,}**"
     )
-
-
-def _render_uploader() -> None:
-    """Uploader dinâmico conforme os formatos do modelo ativo.
-
-    IMPORTANTE — leia antes de "consertar":
-
-    Passamos APENAS extensões (sem ponto) ao `type=` do file_uploader.
-    NÃO adicione MIME types aqui. Misturar MIME types (ex.: "text/plain")
-    com extensões (ex.: "png") faz com que alguns browsers — notavelmente
-    Chrome/Edge no Windows — abram o diálogo nativo já filtrado pelo
-    primeiro MIME, escondendo imagens e PDFs por trás do dropdown.
-
-    Só com extensões, o diálogo abre em "Todos os arquivos suportados" e
-    mostra tudo lado a lado. Se o comportamento voltar a quebrar, revise
-    esta função primeiro.
-    """
-    meta = _modelo_atual()
-    formatos = meta["formatos"]
-
-    exts: List[str] = []
-    if "texto" in formatos:
-        exts += EXTENSOES_TEXTO
-    if "imagem" in formatos:
-        exts += EXTENSOES_IMAGEM
-    # PDF sempre disponível (extraído como texto pelo pypdf)
-    exts += EXTENSOES_PDF
-
-    # Só extensões sem ponto — máxima compatibilidade entre SOs/browsers.
-    accept = [e.lstrip(".") for e in exts]
-
-    # Lista os formatos aceitos de forma legível no help do widget.
-    formatos_legiveis = ", ".join(sorted({e.lstrip(".").upper() for e in exts}))
-
-    st.markdown("##### 📎 Anexos")
-    arquivos = st.file_uploader(
-        "Envie arquivos (múltiplos)",
-        type=accept,
-        accept_multiple_files=True,
-        key=f"uploader_{st.session_state.upload_nonce}",
-        label_visibility="collapsed",
-        help=(
-            f"Tamanho máx.: {tamanho_legivel(MAX_FILE_SIZE_BYTES)} por arquivo.\n\n"
-            f"Formatos aceitos neste modelo: {formatos_legiveis}."
-        ),
-    )
-
-    if arquivos:
-        _processar_novos_uploads(arquivos)
-
-
-def _processar_novos_uploads(arquivos: List[Any]) -> None:
-    """Processa os uploads do widget e adiciona à lista de anexos (sem duplicar)."""
-    existentes = {(a["nome"], a["tamanho"]) for a in st.session_state.anexos}
-
-    for arq in arquivos:
-        try:
-            bytes_arq = arq.read()
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Falha ao ler **{arq.name}**: {exc}")
-            continue
-
-        resultado = processar_upload(arq.name, bytes_arq)
-
-        if resultado["erro"]:
-            st.error(f"**{resultado['nome']}**: {resultado['erro']}")
-            continue
-
-        chave = (resultado["nome"], resultado["tamanho"])
-        if chave in existentes:
-            continue
-        existentes.add(chave)
-        st.session_state.anexos.append(resultado)
-
-
-def _render_anexos_chips() -> None:
-    """Chips com nome/tipo/tamanho + botão de remover por arquivo."""
-    if not st.session_state.anexos:
-        st.caption("_Nenhum anexo pendente._")
-        return
-
-    removidos: List[int] = []
-    for i, anexo in enumerate(list(st.session_state.anexos)):
-        col_info, col_btn = st.columns([5, 1])
-        with col_info:
-            st.markdown(
-                f"<div style='background:#1e293b;padding:6px 10px;"
-                f"border-radius:8px;margin-bottom:4px;font-size:0.82em;'>"
-                f"{descrever_anexo(anexo)}</div>",
-                unsafe_allow_html=True,
-            )
-        with col_btn:
-            if st.button(
-                "🗑️",
-                key=f"rm_anexo_{i}_{st.session_state.upload_nonce}",
-                help="Remover anexo",
-            ):
-                removidos.append(i)
-
-    if removidos:
-        for i in sorted(removidos, reverse=True):
-            st.session_state.anexos.pop(i)
-        st.session_state.upload_nonce += 1
-        st.rerun()
 
 
 def _render_token_counter() -> None:
@@ -406,7 +289,7 @@ def _render_token_counter() -> None:
 
     st.markdown("##### 🧮 Contexto")
     st.metric(
-        label="Tokens no histórico + anexos",
+        label="Tokens no histórico",
         value=f"{total:,}",
         delta=f"/ {limite:,}",
     )
@@ -432,8 +315,6 @@ def _render_acoes() -> None:
 
 def _limpar_conversa() -> None:
     st.session_state.mensagens = []
-    st.session_state.anexos = []
-    st.session_state.upload_nonce += 1
     st.rerun()
 
 
@@ -481,6 +362,23 @@ def _render_badge_modelo() -> None:
     )
 
 
+def _render_anexos_da_mensagem(anexos_info: List[Dict[str, Any]]) -> None:
+    """Mostra chips com os anexos enviados junto à mensagem."""
+    if not anexos_info:
+        return
+    chips = []
+    for a in anexos_info:
+        emoji = {"texto": "📄", "pdf": "📕", "imagem": "🖼️"}.get(a["tipo"], "📎")
+        tamanho = tamanho_legivel(int(a["tamanho"]))
+        chips.append(
+            f"<span class='anexo-chip'>{emoji} {a['nome']} · {tamanho}</span>"
+        )
+    st.markdown(
+        "<div style='margin-top:8px;'>" + "".join(chips) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_mensagem(msg: Dict[str, Any]) -> None:
     """Renderiza uma única mensagem do histórico."""
     role = msg["role"]
@@ -501,10 +399,7 @@ def _render_mensagem(msg: Dict[str, Any]) -> None:
         if role == "user":
             display = msg.get("display_text", "")
             st.markdown(display or "_(mensagem vazia)_")
-            nomes = msg.get("anexos_nomes") or []
-            if nomes:
-                chips = " ".join(f"`📎 {n}`" for n in nomes)
-                st.markdown(chips)
+            _render_anexos_da_mensagem(msg.get("anexos_info") or [])
         else:
             st.markdown(msg.get("content", ""))
 
@@ -520,7 +415,8 @@ def _render_main() -> None:
             <div style="text-align:center; padding: 60px 20px; color:#64748b;">
                 <h2 style="color:{COR_TEXTO}; margin-bottom: 8px;">Olá! 👋</h2>
                 <p style="font-size: 1.05em;">
-                    Escolha um modelo na barra lateral, anexe arquivos se quiser e comece a conversar.
+                    Escolha um modelo na barra lateral, digite sua mensagem e
+                    anexe arquivos pelo 📎 dentro da caixa de texto.
                 </p>
                 <p style="font-size: 0.9em;">
                     Modelo ativo:
@@ -535,10 +431,22 @@ def _render_main() -> None:
     for msg in st.session_state.mensagens:
         _render_mensagem(msg)
 
-    # Input do chat
-    prompt = st.chat_input("Digite sua mensagem...")
-    if prompt:
-        _processar_envio(prompt)
+    # Dica de uso (só enquanto estiver vazio o histórico)
+    if not st.session_state.mensagens:
+        st.caption(
+            f"💡 Formatos aceitos: **{', '.join(e.lstrip('.').upper() for e in _EXTENSOES_ACEITAS)}** "
+            f"· máx. **{tamanho_legivel(MAX_FILE_SIZE_BYTES)}** por arquivo"
+        )
+
+    # Input do chat COM upload integrado (📎 dentro da caixa)
+    resultado = st.chat_input(
+        "Digite sua mensagem ou anexe um arquivo...",
+        accept_file=True,
+        file_type=[e.lstrip(".") for e in _EXTENSOES_ACEITAS],
+        accept_multiple_files=True,
+    )
+    if resultado:
+        _processar_envio(resultado)
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -546,7 +454,21 @@ def _render_main() -> None:
 # ────────────────────────────────────────────────────────────────────────────────
 
 
-def _processar_envio(prompt: str) -> None:
+def _extrair_texto_e_arquivos(resultado: Any) -> tuple[str, List[Any]]:
+    """Compatível com str (Streamlit antigo) e ChatInputValue (>=1.40)."""
+    if isinstance(resultado, str):
+        return resultado, []
+    texto = getattr(resultado, "text", "") or ""
+    arquivos = getattr(resultado, "files", None) or []
+    return texto, list(arquivos)
+
+
+def _processar_envio(resultado: Any) -> None:
+    """Processa um envio do chat_input (texto + arquivos opcionais)."""
+    prompt, arquivos = _extrair_texto_e_arquivos(resultado)
+    if not prompt.strip() and not arquivos:
+        return
+
     model_id = st.session_state.modelo_id
     meta = MODELOS[model_id]
 
@@ -557,35 +479,58 @@ def _processar_envio(prompt: str) -> None:
         st.error(str(exc))
         return
 
-    # 2) Monta content multimodal (texto + anexos)
-    anexos_snapshot = list(st.session_state.anexos)
+    # 2) Processa cada arquivo em memória
+    anexos: List[Dict[str, Any]] = []
+    for arq in arquivos:
+        try:
+            bytes_arq = arq.read()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Falha ao ler **{arq.name}**: {exc}")
+            continue
+
+        proc = processar_upload(arq.name, bytes_arq)
+        if proc["erro"]:
+            st.error(f"**{proc['nome']}**: {proc['erro']}")
+            continue
+        anexos.append(proc)
+
+    # 3) Incompatibilidade imagem/modelo (considera envio atual E histórico)
+    tem_imagem_novo = any(a["tipo"] == "imagem" for a in anexos)
+    if (tem_imagem_novo or _historico_tem_imagem()) and "imagem" not in meta["formatos"]:
+        st.error(
+            f"**{meta['nome']}** não aceita imagens. "
+            "Remova o arquivo, troque para um modelo multimodal, "
+            "ou limpe a conversa se o histórico tiver imagens."
+        )
+        return
+
+    # 4) Monta content multimodal (texto + arquivos)
     try:
         content = montar_content(
             prompt,
-            anexos_snapshot,
+            anexos,
             modelo_aceita_imagem=("imagem" in meta["formatos"]),
         )
     except Exception as exc:  # noqa: BLE001
         st.error(f"Erro ao montar conteúdo: {exc}")
         return
 
-    # 3) Registra a mensagem do usuário imediatamente (preserva o texto)
+    # 5) Registra a mensagem do usuário (preserva texto + info dos anexos)
     user_msg: Dict[str, Any] = {
         "role": "user",
         "content": content,
-        "display_text": prompt,
-        "anexos_nomes": [a["nome"] for a in anexos_snapshot],
+        "display_text": prompt or "(anexo enviado)",
+        "anexos_info": [
+            {"nome": a["nome"], "tipo": a["tipo"], "tamanho": a["tamanho"]}
+            for a in anexos
+        ],
     }
     st.session_state.mensagens.append(user_msg)
 
-    # 4) Consome anexos e reseta o uploader
-    st.session_state.anexos = []
-    st.session_state.upload_nonce += 1
-
-    # 5) Renderiza a mensagem do usuário
+    # 6) Renderiza a mensagem do usuário
     _render_mensagem(user_msg)
 
-    # 6) Chama a API com streaming
+    # 7) Chama a API com streaming
     with st.chat_message("assistant", avatar="🤖"):
         st.markdown(
             f"<div style='color:{COR_VERDE_NVIDIA}; "
@@ -606,7 +551,7 @@ def _processar_envio(prompt: str) -> None:
             st.error(f"Erro inesperado: {exc}")
             return
 
-    # 7) Persiste a resposta
+    # 8) Persiste a resposta
     if resposta and resposta.strip():
         st.session_state.mensagens.append(
             {
